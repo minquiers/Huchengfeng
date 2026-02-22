@@ -1,0 +1,13 @@
+### export_hcf.yaml
+model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+# 确保路径指向你刚训练完的文件夹
+adapter_name_or_path: saves/HCF_v2_LongMemory  
+template: qwen
+finetuning_type: lora
+
+ # 合并后的存放路径
+export_dir: models/HCF_v2_Merged 
+export_size: 2
+# 合并通常用 CPU 即可，不占显存
+export_device: cpu   
+export_legacy_format: false

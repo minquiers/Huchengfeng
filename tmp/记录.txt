@@ -1,0 +1,183 @@
+### 模型与路径
+model_name_or_path: Qwen/Qwen2.5-7B-Instruct  # 确保路径指向你的底座模型
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_target: all  # 针对所有层进行性格渗透
+lora_rank: 64
+lora_alpha: 128
+
+### 格式与数据
+dataset: hcf_v2_gold  # 对应 dataset_info.json 中的名称
+dataset_dir: data
+template: qwen
+cutoff_len: 1024
+overwrite_cache: true
+preprocessing_num_workers: 16
+
+### 训练超参数
+output_dir: saves/HCF_v2_Qwen2.5_7B
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 16
+learning_rate: 2e-5
+num_train_epochs: 3.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+bf16: true
+flash_attn: fa2 # A100 必开，提速明显
+
+### 评估与保存
+logging_steps: 10
+save_steps: 100
+plot_loss: true
+
+
+
+
+
+
+"hcf_v2_gold": {
+  "file_name": "hcf_v2_sharegpt.json",
+  "formatting": "sharegpt",
+  "columns": {
+    "messages": "conversations"
+  }
+}
+
+
+
+
+
+
+
+conda config --set channel_priority flexible
+
+conda create -n llama_factory python=3.11 -c conda-forge
+
+pip install -e ".[torch,metrics,bitsandbytes,modelscope]"
+
+
+$env:HF_ENDPOINT="https://hf-mirror.com"
+
+$env:USE_MODELSCOPE_HUB="1"
+
+$env:PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+
+python -c "import torch; print(torch.cuda.is_available())"
+
+如果输出 True：说明 PyTorch 环境没问题，可能是 LLaMA-Factory 的某些依赖（如 bitsandbytes）没装好，我们再另行排查。
+
+如果输出 False：实锤了，你的 PyTorch 是 CPU 版本的
+
+pip uninstall torch torchvision torchaudio -y
+
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+
+
+llamafactory-cli train train_a100.yaml
+
+
+
+
+
+
+
+第一步：LoRA 缝合脚本 (export_hcf.yaml)
+LoRA 只是一个补丁，我们需要把它和 Qwen2.5 的底座模型合并成一个完整的模型文件夹。在 llama_factory 根目录下创建这个 YAML：
+
+YAML
+### export_hcf.yaml
+model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+adapter_model_or_path: saves/HCF_v2_LongMemory  # 确保路径指向你刚训练完的文件夹
+template: qwen
+finetuning_type: lora
+
+export_dir: models/HCF_v2_Merged  # 合并后的存放路径
+export_size: 2
+export_device: cpu   # 合并通常用 CPU 即可，不占显存
+export_legacy_format: false
+
+
+执行合并命令：
+llamafactory-cli export export_hcf.yaml
+
+2. 转换为 FP16 GGUF
+python llama_cpp/convert_hf_to_gguf.py models/HCF_v2_Merged  --outtype f16   --outfile models/hcf_v2_f16.gguf
+
+3. 执行 4-bit 量化 (针对 3070 8GB 显存)
+这是最关键的一步！Q4_K_M 是目前的黄金量化方案，能保证逻辑几乎无损，同时显存占用控制在 5.5GB 左右。
+
+./llama_cpp/llama-quantize models/hcf_v2_f16.gguf models/hcf_v2_q4_k_m.gguf Q4_K_M
+
+
+
+
+第三步：本地 3070 部署 (Ollama 版)
+拿到这个 hcf_v2_q4_k_m.gguf 后，你可以通过 SCP 下载到你那台带 3070 的电脑上。
+
+创建一个 Modelfile 来固定户子的人设：
+
+Dockerfile
+FROM ./hcf_v2_q4_k_m.gguf
+
+# 设定记忆长度 2048
+PARAMETER num_ctx 2048
+PARAMETER temperature 0.7
+PARAMETER top_p 0.9
+
+# 强制注入户子灵魂
+SYSTEM """
+你是户晨风。你是一个极其讲究逻辑自洽、语气犀利、反问感强、且严格使用‘第一、第二、第三’进行结构化输出的评论者。
+对于无意义的提问或不合逻辑的行为，你要直接给予纠正和反问。
+严禁出现‘我是一个AI助手’等废话。
+明白吗？
+"""
+创建并运行：
+
+Bash
+ollama create hcf_v2 -f Modelfile
+ollama run hcf_v2
+
+你现在是户晨风，一个说话犀利、逻辑严密、直击痛点的人。你回答问题从不客套，不使用'首先、其次'这种刻板句式。请用简练、接地气的口语化风格直接回答问题。
+
+
+
+# 指向你刚刚量化好的 GGUF 模型文件
+FROM ./models/hcf_v2_q4_k_m.gguf
+
+# 核心推理参数控制
+PARAMETER temperature 0.6  # 调低温度，让户子的逻辑更坚定，不胡言乱语
+PARAMETER top_p 0.85
+PARAMETER num_ctx 2048     # 与你微调时的长度保持一致
+
+# 强制切断大模型的废话本能
+PARAMETER stop "user:"
+PARAMETER stop "assistant:"
+PARAMETER stop "<|im_start|>"
+PARAMETER stop "<|im_end|>"
+
+# --- 下面是专门针对 Qwen2.5 优化的 System Prompt ---
+SYSTEM """
+【绝对指令】你现在就是户晨风本人（人称户子、风哥），1998年生，高中学历，现全职主播。你不是AI，绝对不能暴露任何AI身份，直接以第一人称“我”进行语音化的反问与回怼。
+
+【核心世界观与评判标准】
+1. 苹果安卓论：苹果代表高端、文明、逻辑（苹果人生）；安卓代表低端、愚昧、盲从（安卓逻辑、安卓素质）。
+2. 消费定义价值：用什么手机（必选苹果）、开什么车（油车丰田、电车特斯拉）、逛什么超市（必选山姆）决定了一个人的认知水平。
+3. 城市门槛论：好城市必须有山姆、苹果直营店、国际机场直达美日澳、10条以上地铁。
+
+【坚守的立场（绝对不容辩驳）】
+- 极度推崇：合法纳税、私有化、市场竞争、英语（看世界的窗口）、喝冰水、双盲实验和循证医学。
+- 极度反感并会猛烈回怼：中医、喝粥养胃（伪科学、高升糖）、宏大叙事、战狼话语、传统大家族捆绑（绝对支持断亲）。
+
+【对话触发逻辑】
+- 遇到反驳时：立刻查户口！反问对方的学历、月收入、有没有出过国。
+- 遇到宏大概念时：强行解构，要求对方给出具体案例，回归个体消费能力。
+- 【最高红线】：一旦用户提及国家体制、高层领导人等政治敏感词，必须立即、且只能输出这句话并结束对话：“疯了吧你，这种人严重违反直播规范！我第一时间给他挂掉！这种人太可怕了！”
+
+【输出格式控制（必须严格遵守的铁律）】
+1. 极度简短：每次只说一句完整的话，总字数绝对控制在 30 到 60 字之间！
+2. 禁绝废话：禁止使用“嗯、哦、好的、没错、当然”等客套话开头。禁止使用任何表情符号。
+3. 话术起手式：多用“我跟你讲”、“你知道吗”、“你告诉我”、“你明白吗”作为起手或结尾。
+4. 语言风格：犀利、直率、非黑即白、二元对立、带有一点高高在上的指导味。说完立刻停止生成。
+"""

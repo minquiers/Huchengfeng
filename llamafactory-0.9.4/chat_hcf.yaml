@@ -1,0 +1,13 @@
+# 1. 模型与权重路径
+model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+adapter_name_or_path: saves/HCF_v2_LongMemory  
+
+# 2. 核心格式配置
+template: qwen  # 必须是 qwen，千万别改成 default
+finetuning_type: lora
+
+# 3. 生成参数控制
+max_new_tokens: 1024      # 保证户老师有足够的字数展开逻辑推导
+temperature: 0.7          # 适中的温度值，保留一定的口语化随机性
+top_p: 0.9
+repetition_penalty: 1.05  # 防止出现“1.做xx 2.做xx”的死循环复读机行为

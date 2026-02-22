@@ -1,0 +1,34 @@
+### 1. 模型与路径配置
+model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_target: all
+lora_rank: 64
+lora_alpha: 128
+lora_dropout: 0.1
+
+### 2. 数据集配置
+dataset: hcf_v2_gold
+dataset_dir: data
+template: qwen
+cutoff_len: 2048      # <--- 记忆长度从 1024 提高到 2048
+overwrite_cache: true
+preprocessing_num_workers: 16
+
+### 3. 训练超参数 (针对 40G 显存 + 长记忆优化)
+output_dir: saves/HCF_v2_LongMemory
+per_device_train_batch_size: 2    # 记忆变长了，单次吞吐量稍微降一点防止 OOM
+gradient_accumulation_steps: 32   # 增加累加步数，维持 Global Batch Size = 64
+learning_rate: 2e-5
+num_train_epochs: 3.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+bf16: true
+flash_attn: fa2
+
+### 4. 保存与日志
+logging_steps: 5
+save_steps: 100
+plot_loss: true
+save_total_limit: 3
